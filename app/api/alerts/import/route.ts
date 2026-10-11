@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { correlateRepeatedFailedLogins } from "@/lib/alerts/correlation";
 import { normalizeWazuhAlert } from "@/lib/alerts/normalizer";
 import { sampleWazuhAlerts } from "@/lib/alerts/sample-wazuh-alerts";
 import {
@@ -78,6 +79,9 @@ export async function POST(request: Request) {
     normalizeWazuhAlert(alert, "sample")
   );
 
+  const correlationPreview =
+    correlateRepeatedFailedLogins(normalizedAlerts);
+
   const rows = normalizedAlerts.map((alert) => ({
     source: alert.source,
     source_alert_id: alert.sourceAlertId,
@@ -145,6 +149,7 @@ export async function POST(request: Request) {
         agentName: alert.agentName,
         ruleId: alert.ruleId,
       })),
+      correlationPreview,
     });
   } catch (error) {
     console.error(
