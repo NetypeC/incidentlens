@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { normalizeWazuhAlert } from "@/lib/alerts/normalizer";
 import { sampleWazuhAlerts } from "@/lib/alerts/sample-wazuh-alerts";
 import {
   SampleImportRequestSchema,
@@ -7,19 +8,7 @@ import {
 } from "@/lib/alerts/schema";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-function getString(
-  record: Record<string, unknown> | undefined,
-  key: string
-): string | null {
-  const value = record?.[key];
-
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : null;
-}
-
 export async function POST(request: Request) {
-  // This sample-data endpoint must not run in production.
   if (process.env.NODE_ENV === "production") {
     return Response.json({ error: "Not found." }, { status: 404 });
   }
@@ -53,7 +42,6 @@ export async function POST(request: Request) {
     issues: Array<{ path: string; message: string }>;
   }> = [];
 
-  // Validate every alert before attempting a database write.
   for (const alert of sampleWazuhAlerts) {
     const result = WazuhAlertSchema.safeParse(alert);
 
@@ -70,7 +58,6 @@ export async function POST(request: Request) {
     }
   }
 
-  // Fail the batch instead of storing a partial set of test alerts.
   if (rejectedAlerts.length > 0) {
     return Response.json(
       {
@@ -87,45 +74,29 @@ export async function POST(request: Request) {
     );
   }
 
-  // Convert the validated records into database rows.
-  const rows = acceptedAlerts.map((alert) => {
-    const groups = alert.rule.groups ?? [];
+  const normalizedAlerts = acceptedAlerts.map((alert) =>
+    normalizeWazuhAlert(alert, "sample")
+  );
 
-    let eventType: string | null = null;
+  const rows = normalizedAlerts.map((alert) => ({
+    source: alert.source,
+    source_alert_id: alert.sourceAlertId,
+    alert_timestamp: alert.timestamp,
 
-    if (groups.includes("authentication_failed")) {
-      eventType = "authentication_failed";
-    } else if (groups.includes("authentication_success")) {
-      eventType = "authentication_success";
-    } else if (groups.includes("syscheck")) {
-      eventType = "file_integrity_change";
-    } else if (groups.length > 0) {
-      eventType = groups[0];
-    }
+    agent_id: alert.agentId,
+    agent_name: alert.agentName,
+    agent_ip: alert.rawAlert.agent?.ip ?? null,
 
-    return {
-      source: "sample" as const,
-      source_alert_id: alert.id,
-      alert_timestamp: alert.timestamp,
+    rule_id: alert.ruleId,
+    rule_level: alert.ruleLevel,
+    rule_description: alert.ruleDescription,
 
-      agent_id: alert.agent.id ?? null,
-      agent_name: alert.agent.name ?? null,
-      agent_ip: alert.agent.ip ?? null,
+    event_type: alert.eventType,
+    source_ip: alert.sourceIp,
+    username: alert.username,
 
-      rule_id: alert.rule.id,
-      rule_level: alert.rule.level,
-      rule_description: alert.rule.description,
-
-      event_type: eventType,
-      source_ip: getString(alert.data, "srcip"),
-      username:
-        getString(alert.data, "dstuser") ??
-        getString(alert.data, "username") ??
-        getString(alert.data, "user"),
-
-      raw_alert: alert,
-    };
-  });
+    raw_alert: alert.rawAlert,
+  }));
 
   try {
     const supabase = createAdminClient();
@@ -166,6 +137,14 @@ export async function POST(request: Request) {
         inserted,
         skippedAsDuplicates: acceptedAlerts.length - inserted,
       },
+      normalizationPreview: normalizedAlerts.slice(0, 3).map((alert) => ({
+        sourceAlertId: alert.sourceAlertId,
+        eventType: alert.eventType,
+        sourceIp: alert.sourceIp,
+        username: alert.username,
+        agentName: alert.agentName,
+        ruleId: alert.ruleId,
+      })),
     });
   } catch (error) {
     console.error(
