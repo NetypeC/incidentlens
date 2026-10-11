@@ -168,3 +168,134 @@ export function correlateRepeatedFailedLogins(
       Date.parse(a.firstSeenAt) - Date.parse(b.firstSeenAt)
   );
 }
+
+const SUCCESS_AFTER_FAILURE_RULE_ID =
+  "failed_then_successful_login_v1";
+
+const DEFAULT_SUCCESS_WINDOW_MINUTES = 10;
+
+export function correlateFailedThenSuccessfulLogin(
+  alerts: NormalizedSecurityAlert[],
+  options: {
+    windowMinutes?: number;
+  } = {}
+): CorrelatedIncidentPreview[] {
+  const windowMinutes =
+    options.windowMinutes ?? DEFAULT_SUCCESS_WINDOW_MINUTES;
+
+  if (!Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+    throw new Error("Window duration must be greater than zero.");
+  }
+
+  const windowMs = windowMinutes * 60 * 1000;
+
+  const failedAlerts = alerts.filter(
+    (alert) =>
+      alert.eventType === "authentication_failed" &&
+      Boolean(alert.username)
+  );
+
+  const successfulAlerts = alerts.filter(
+    (alert) =>
+      alert.eventType === "authentication_success" &&
+      Boolean(alert.username)
+  );
+
+  const incidents: CorrelatedIncidentPreview[] = [];
+
+  for (const success of successfulAlerts) {
+    const successTime = Date.parse(success.timestamp);
+
+    if (!Number.isFinite(successTime) || !success.username) {
+      continue;
+    }
+
+    // Find failed logins for the same account that happened
+    // before this success and within the configured time window.
+    const matchingFailures = failedAlerts
+      .filter((failure) => {
+        if (failure.username !== success.username) {
+          return false;
+        }
+
+        const failureTime = Date.parse(failure.timestamp);
+
+        if (!Number.isFinite(failureTime)) {
+          return false;
+        }
+
+        // The failed event must precede the successful event.
+        if (failureTime >= successTime) {
+          return false;
+        }
+
+        if (successTime - failureTime > windowMs) {
+          return false;
+        }
+
+        // If both IP addresses are known, they must match.
+        if (
+          failure.sourceIp &&
+          success.sourceIp &&
+          failure.sourceIp !== success.sourceIp
+        ) {
+          return false;
+        }
+
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          Date.parse(a.timestamp) - Date.parse(b.timestamp)
+      );
+
+    // At least one preceding failed login is required.
+    if (matchingFailures.length === 0) {
+      continue;
+    }
+
+    const matchedAlerts = [...matchingFailures, success].sort(
+      (a, b) =>
+        Date.parse(a.timestamp) - Date.parse(b.timestamp)
+    );
+
+    const allIpsConfirmed = matchingFailures.every(
+      (failure) =>
+        Boolean(failure.sourceIp) &&
+        Boolean(success.sourceIp) &&
+        failure.sourceIp === success.sourceIp
+    );
+
+    const matchReason = allIpsConfirmed
+      ? `A successful login for account "${success.username}" ` +
+        `followed ${matchingFailures.length} failed login(s) ` +
+        `within ${windowMinutes} minutes. The source IP also ` +
+        `matched (${success.sourceIp}). This pattern requires ` +
+        `investigation but does not prove the account was compromised.`
+      : `A successful login for account "${success.username}" ` +
+        `followed ${matchingFailures.length} failed login(s) ` +
+        `within ${windowMinutes} minutes. Some source IP evidence ` +
+        `was unavailable, so this match relies partly on account ` +
+        `and timing. This pattern does not prove the account was compromised.`;
+
+    incidents.push({
+      ruleId: SUCCESS_AFTER_FAILURE_RULE_ID,
+      title:
+        `Failed logins followed by successful login for ` +
+        `${success.username}`,
+      severity: "medium",
+      matchedAlertIds: matchedAlerts.map(
+        (alert) => alert.sourceAlertId
+      ),
+      matchedAlertCount: matchedAlerts.length,
+      firstSeenAt: matchedAlerts[0].timestamp,
+      lastSeenAt: success.timestamp,
+      matchReason,
+    });
+  }
+
+  return incidents.sort(
+    (a, b) =>
+      Date.parse(a.firstSeenAt) - Date.parse(b.firstSeenAt)
+  );
+}
