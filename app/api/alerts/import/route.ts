@@ -133,6 +133,165 @@ export async function POST(request: Request) {
 
     const inserted = data?.length ?? 0;
 
+    const incidentPreviews = [
+      ...correlationPreview,
+      ...successfulLoginPreview,
+    ];
+
+    const createDedupeKey = (
+      preview: (typeof incidentPreviews)[number]
+    ) =>
+      `${preview.ruleId}:${[...preview.matchedAlertIds]
+        .sort()
+        .join("|")}`;
+
+    const incidentRows = incidentPreviews.map((preview) => ({
+      dedupe_key: createDedupeKey(preview),
+      title: preview.title,
+      summary: preview.matchReason,
+      severity: preview.severity,
+      confidence: "medium" as const,
+      status: "open" as const,
+      correlation_rule_id: preview.ruleId,
+      first_seen_at: preview.firstSeenAt,
+      last_seen_at: preview.lastSeenAt,
+    }));
+
+    const { data: savedAlerts, error: savedAlertsError } =
+      await supabase
+        .from("security_alerts")
+        .select("id, source_alert_id")
+        .eq("source", "sample")
+        .in(
+          "source_alert_id",
+          normalizedAlerts.map((alert) => alert.sourceAlertId)
+        );
+
+    if (savedAlertsError) {
+      console.error(
+        "Could not retrieve imported alerts:",
+        savedAlertsError.message
+      );
+
+      return Response.json(
+        { error: "Could not retrieve saved alerts." },
+        { status: 500 }
+      );
+    }
+
+    const alertDatabaseIdBySourceId = new Map(
+      (savedAlerts ?? []).map((alert) => [
+        alert.source_alert_id,
+        alert.id,
+      ])
+    );
+
+    let savedIncidents: Array<{
+      id: string;
+      dedupe_key: string;
+    }> = [];
+
+    if (incidentRows.length > 0) {
+      const { error: incidentUpsertError } = await supabase
+        .from("incidents")
+        .upsert(incidentRows, {
+          onConflict: "dedupe_key",
+          ignoreDuplicates: true,
+        });
+
+      if (incidentUpsertError) {
+        console.error(
+          "Could not save incidents:",
+          incidentUpsertError.message
+        );
+
+        return Response.json(
+          { error: "Could not save correlated incidents." },
+          { status: 500 }
+        );
+      }
+
+      const { data: incidentRecords, error: incidentReadError } =
+        await supabase
+          .from("incidents")
+          .select("id, dedupe_key")
+          .in(
+            "dedupe_key",
+            incidentRows.map((row) => row.dedupe_key)
+          );
+
+      if (incidentReadError) {
+        console.error(
+          "Could not retrieve saved incidents:",
+          incidentReadError.message
+        );
+
+        return Response.json(
+          { error: "Could not retrieve saved incidents." },
+          { status: 500 }
+        );
+      }
+
+      savedIncidents = incidentRecords ?? [];
+    }
+
+    const incidentIdByDedupeKey = new Map(
+      savedIncidents.map((incident) => [
+        incident.dedupe_key,
+        incident.id,
+      ])
+    );
+
+    const incidentLinks = incidentPreviews.flatMap((preview) => {
+      const incidentId = incidentIdByDedupeKey.get(
+        createDedupeKey(preview)
+      );
+
+      if (!incidentId) {
+        return [];
+      }
+
+      return preview.matchedAlertIds.flatMap((sourceAlertId) => {
+        const alertId =
+          alertDatabaseIdBySourceId.get(sourceAlertId);
+
+        if (!alertId) {
+          return [];
+        }
+
+        return [
+          {
+            incident_id: incidentId,
+            alert_id: alertId,
+            match_rule_id: preview.ruleId,
+            match_reason: preview.matchReason,
+          },
+        ];
+      });
+    });
+
+    if (incidentLinks.length > 0) {
+      const { error: linkError } = await supabase
+        .from("incident_alerts")
+        .upsert(incidentLinks, {
+          onConflict: "incident_id,alert_id",
+          ignoreDuplicates: true,
+        });
+
+      if (linkError) {
+        console.error(
+          "Could not link incident alerts:",
+          linkError.message
+        );
+
+        return Response.json(
+          { error: "Could not link incidents to alerts." },
+          { status: 500 }
+        );
+      }
+    }
+
+
     return Response.json({
       success: true,
       source: "sample",
