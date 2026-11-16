@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
 type DashboardAlert = {
   id: string;
@@ -27,13 +29,7 @@ type DashboardIncident = {
 
 type DashboardData = {
   success: boolean;
-
-  counts: {
-    alerts: number;
-    incidents: number;
-    openIncidents: number;
-  };
-
+  counts: { alerts: number; incidents: number; openIncidents: number };
   recentAlerts: DashboardAlert[];
   recentIncidents: DashboardIncident[];
 };
@@ -51,40 +47,45 @@ type ImportResult = {
 };
 
 function formatDate(value: string | null): string {
-  if (!value) {
-    return "—";
-  }
-
+  if (!value) return "—";
   const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
+  if (Number.isNaN(date.getTime())) return value;
 
   return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
   }).format(date);
 }
 
-function StatusBadge({ value }: { value: string }) {
-  const styles: Record<string, string> = {
-    sample: "bg-amber-100 text-amber-800",
-    wazuh: "bg-blue-100 text-blue-800",
-    open: "bg-rose-100 text-rose-800",
-    investigating: "bg-blue-100 text-blue-800",
-    resolved: "bg-emerald-100 text-emerald-800",
-  };
+async function fetchDashboardData(): Promise<DashboardData> {
+  const response = await fetch("/api/dashboard", { cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not load dashboard data.");
+  return result as DashboardData;
+}
 
-  const style =
-    styles[value.toLowerCase()] ?? "bg-slate-100 text-slate-700";
-
+function Stat({
+  label,
+  value,
+  attention,
+}: {
+  label: string;
+  value: number | undefined;
+  attention?: boolean;
+}) {
   return (
-    <span
-      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${style}`}
-    >
-      {value}
-    </span>
+    <div className={`stat${attention ? " stat--attention" : ""}`}>
+      <p className="stat__label">{label}</p>
+      <p className="stat__value" aria-live="polite">
+        {value === undefined ? (
+          <span className="loading-dash">—</span>
+        ) : (
+          value.toLocaleString("en-GB")
+        )}
+      </p>
+    </div>
   );
 }
 
@@ -94,55 +95,14 @@ export default function Home() {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-
-  const loadDashboard = useCallback(async () => {
-
-    try {
-      const response = await fetch("/api/dashboard", {
-        cache: "no-store",
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          result.error || "Could not load dashboard data."
-        );
-      }
-
-      setData(result as DashboardData);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Could not connect to the dashboard API."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [alertSearch, setAlertSearch] = useState("");
 
   useEffect(() => {
     let active = true;
 
-    fetch("/api/dashboard", {
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        const result = await response.json();
-
-        if (!response.ok) {
-          throw new Error(
-            result.error || "Could not load dashboard data."
-          );
-        }
-
-        return result as DashboardData;
-      })
+    fetchDashboardData()
       .then((result) => {
-        if (active) {
-          setData(result);
-        }
+        if (active) setData(result);
       })
       .catch((err: unknown) => {
         if (active) {
@@ -154,16 +114,13 @@ export default function Home() {
         }
       })
       .finally(() => {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       });
 
     return () => {
       active = false;
     };
   }, []);
-
 
   async function importSampleAlerts() {
     setImporting(true);
@@ -173,330 +130,314 @@ export default function Home() {
     try {
       const response = await fetch("/api/alerts/import", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          source: "sample",
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "sample" }),
       });
 
       const result = (await response.json()) as ImportResult;
 
       if (!response.ok || !result.success) {
-        throw new Error(
-          result.error || "Could not import sample alerts."
-        );
+        throw new Error(result.error || "Could not import sample alerts.");
       }
 
       const counts = result.counts;
 
-      if (counts) {
-        setNotice(
-          `Processed ${counts.received} sample alerts: ` +
-            `${counts.inserted} inserted, ` +
-            `${counts.skippedAsDuplicates} duplicates skipped, ` +
-            `${counts.rejected} rejected.`
-        );
-      } else {
-        setNotice(
-          result.message || "Sample-alert import completed."
-        );
-      }
-
-      await loadDashboard();
+      setNotice(
+        counts
+          ? `Processed ${counts.received} sample alerts: ${counts.inserted} inserted, ${counts.skippedAsDuplicates} duplicates skipped, ${counts.rejected} rejected.`
+          : result.message || "Sample alert import completed."
+      );
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "The sample-alert import failed."
+        err instanceof Error ? err.message : "The sample alert import failed."
       );
+      setImporting(false);
+      return;
+    }
+
+    // Refresh separately so a refresh failure isn't reported as an import failure.
+    try {
+      setData(await fetchDashboardData());
+    } catch {
+      setError("Alerts were imported, but the dashboard could not refresh.");
     } finally {
       setImporting(false);
     }
   }
 
+  const counts = data?.counts;
+  const recentAlerts = data?.recentAlerts ?? [];
+  const normalizedAlertSearch = alertSearch.trim().toLowerCase();
+
+  const filteredAlerts = recentAlerts.filter((alert) =>
+    [
+      alert.alert_timestamp,
+      alert.source_alert_id,
+      alert.agent_name,
+      alert.rule_id,
+      alert.rule_description,
+      alert.event_type,
+      alert.source_ip,
+      alert.username,
+      alert.source,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .some((value) => value.toLowerCase().includes(normalizedAlertSearch))
+  );
+
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-900 text-lg font-bold text-white">
-              IL
-            </div>
-
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">
-                IncidentLens
-              </h1>
-              <p className="text-sm text-slate-500">
-                Security alert investigation
-              </p>
-            </div>
-          </div>
-
-          <span className="w-fit rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800">
-            Development mode · Sample data
-          </span>
+    <main className="dashboard">
+      <header className="masthead">
+        <div className="page-shell masthead__inner">
+          <Link className="brand" href="/" aria-label="IncidentLens dashboard">
+            <span className="brand__name">IncidentLens</span>
+          </Link>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
-        <section className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="mb-2 text-sm font-semibold uppercase tracking-wider text-slate-500">
-              Overview
-            </p>
+      <div className="page-shell dashboard-content">
+        <section className="dashboard-intro" aria-labelledby="page-title">
+          <h1 className="dashboard-title" id="page-title">
+            Security activity
+          </h1>
 
-            <h2 className="text-3xl font-bold tracking-tight">
-              Security dashboard
-            </h2>
-
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-              Review stored security alerts and monitor your
-              development progress. Sample records are not live
-              security monitoring.
-            </p>
-          </div>
-
-          <button
+          <Button
             type="button"
             onClick={importSampleAlerts}
             disabled={importing || loading}
-            className="rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="button import-button"
           >
-            {importing
-              ? "Importing sample alerts..."
-              : "Import sample alerts"}
-          </button>
+            {importing ? "Loading sample alerts..." : "Load sample alerts"}
+          </Button>
         </section>
 
         {error && (
-          <div
-            role="alert"
-            className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
-          >
+          <div className="message message--error" role="alert">
             {error}
           </div>
         )}
 
         {notice && (
-          <div
-            role="status"
-            className="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
-          >
+          <div className="message message--success" role="status">
             {notice}
           </div>
         )}
 
-        <section
-          aria-label="Security statistics"
-          className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3"
-        >
-          <StatCard
-            title="Total alerts"
-            value={data?.counts.alerts}
-            description="Alerts stored in Supabase"
-            loading={loading}
-          />
-
-          <StatCard
-            title="Saved incidents"
-            value={data?.counts.incidents}
-            description="Incident records in the database"
-            loading={loading}
-          />
-
-          <StatCard
-            title="Open incidents"
-            value={data?.counts.openIncidents}
-            description="Incidents awaiting investigation"
-            loading={loading}
-          />
+        <section className="stats-strip" aria-label="Security statistics">
+          <Stat label="Alerts" value={counts?.alerts} />
+          <Stat label="Incidents" value={counts?.incidents} />
+          <Stat label="Open incidents" value={counts?.openIncidents} attention />
         </section>
 
-        <section className="mb-8 rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-5 py-4 sm:px-6">
-            <h3 className="font-semibold">Recent security alerts</h3>
-            <p className="mt-1 text-sm text-slate-500">
-              The newest alert records saved in your database.
-            </p>
-          </div>
-
-          {loading && !data ? (
-            <div className="px-6 py-10 text-sm text-slate-500">
-              Loading alert data...
-            </div>
-          ) : data?.recentAlerts.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-5 py-3 font-medium">Time</th>
-                    <th className="px-5 py-3 font-medium">Event</th>
-                    <th className="px-5 py-3 font-medium">User</th>
-                    <th className="px-5 py-3 font-medium">Agent</th>
-                    <th className="px-5 py-3 font-medium">Rule</th>
-                    <th className="px-5 py-3 font-medium">Level</th>
-                    <th className="px-5 py-3 font-medium">Source</th>
-                  </tr>
-                </thead>
-
-                <tbody className="divide-y divide-slate-100">
-                  {data.recentAlerts.map((alert) => (
-                    <tr
-                      key={alert.id}
-                      className="transition hover:bg-slate-50"
-                    >
-                      <td className="whitespace-nowrap px-5 py-4 text-slate-500">
-                        {formatDate(alert.alert_timestamp)}
-                      </td>
-
-                      <td className="max-w-sm px-5 py-4">
-                        <p className="font-medium text-slate-900">
-                          {alert.rule_description}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {alert.event_type || "Unclassified event"}
-                        </p>
-                      </td>
-
-                      <td className="px-5 py-4">
-                        {alert.username || "—"}
-                      </td>
-
-                      <td className="px-5 py-4">
-                        {alert.agent_name || "—"}
-                      </td>
-
-                      <td className="px-5 py-4 font-mono text-xs">
-                        {alert.rule_id}
-                      </td>
-
-                      <td className="px-5 py-4">
-                        {alert.rule_level}
-                      </td>
-
-                      <td className="px-5 py-4">
-                        <StatusBadge value={alert.source} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="px-6 py-10 text-sm text-slate-500">
-              No alerts have been saved yet. Click{" "}
-              <span className="font-medium text-slate-700">
-                Import sample alerts
-              </span>{" "}
-              to load the development test records.
-            </div>
-          )}
-
-          <div className="border-t border-slate-200 px-5 py-3 text-xs text-slate-500 sm:px-6">
-            Alert records are read from Supabase. Sample events are
-            labelled and must not be treated as live security data.
-          </div>
-        </section>
-
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-5 py-4 sm:px-6">
-            <h3 className="font-semibold">Recent incidents</h3>
-            <p className="mt-1 text-sm text-slate-500">
-              Incidents saved by the correlation workflow.
-            </p>
+        {/* Incidents first: they are what needs action */}
+        <section className="panel" aria-labelledby="incidents-title">
+          <div className="panel__heading">
+            <h2 className="panel__title" id="incidents-title">
+              Recent incidents
+            </h2>
+            <span className="panel__count">
+              {data ? `${data.recentIncidents.length} records` : ""}
+            </span>
           </div>
 
           {data?.recentIncidents.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[650px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <div
+              className="table-wrap"
+              role="region"
+              aria-label="Recent incidents, horizontally scrollable table"
+              tabIndex={0}
+            >
+              <table className="data-table incidents-table">
+                <thead>
                   <tr>
-                    <th className="px-5 py-3 font-medium">Incident</th>
-                    <th className="px-5 py-3 font-medium">Severity</th>
-                    <th className="px-5 py-3 font-medium">Status</th>
-                    <th className="px-5 py-3 font-medium">Last seen</th>
+                    <th scope="col">Incident</th>
+                    <th scope="col">Severity</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Last seen</th>
+                    <th scope="col">
+                      <span className="sr-only">Open incident</span>
+                    </th>
                   </tr>
                 </thead>
 
-                <tbody className="divide-y divide-slate-100">
+                <tbody>
                   {data.recentIncidents.map((incident) => (
                     <tr key={incident.id}>
-                      <td className="px-5 py-4 font-medium">
-                        <a
+                      <td>
+                        <Link
+                          className="incident-link"
                           href={`/incidents/${incident.id}`}
-                          className="text-blue-700 hover:underline"
                         >
                           {incident.title}
-                        </a>
+                        </Link>
                       </td>
 
-                      <td className="px-5 py-4 capitalize">
-                        {incident.severity}
+                      <td>
+                        <span className="inc-chip">
+                          <span
+                            className="inc-dot"
+                            data-level={incident.severity.toLowerCase()}
+                            aria-hidden="true"
+                          />
+                          {incident.severity}
+                        </span>
                       </td>
 
-                      <td className="px-5 py-4">
-                        <StatusBadge value={incident.status} />
-                      </td>
+                      <td className="inc-cap">{incident.status}</td>
 
-                      <td className="whitespace-nowrap px-5 py-4 text-slate-500">
+                      <td className="table-time">
                         {formatDate(incident.last_seen_at)}
+                      </td>
+
+                      <td>
+                        <Link
+                          className="row-action"
+                          href={`/incidents/${incident.id}`}
+                          aria-label={`Investigate ${incident.title}`}
+                        >
+                          View
+                        </Link>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+          ) : error && !data ? (
+            <div className="table-state">
+              Incident records are unavailable until the connection is restored.
+            </div>
+          ) : !data ? (
+            <div className="table-state" role="status">
+              Loading incident data...
+            </div>
           ) : (
-            <div className="px-6 py-8">
-              <p className="text-sm font-medium text-slate-700">
-                No incident records have been saved yet.
-              </p>
-
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-                Your correlation rules can currently produce incident
-                previews, but the results have not yet been saved to
-                the incidents table. This section will show saved
-                incidents after that workflow is implemented.
+            <div className="incident-empty">
+              <p className="incident-empty__label">No saved incidents</p>
+              <p>
+                Correlation rules can create previews, but no incident records
+                are saved yet.
               </p>
             </div>
           )}
         </section>
 
-        <footer className="py-8 text-center text-xs text-slate-500">
-          IncidentLens · Local development prototype
-        </footer>
+        <section className="panel" aria-labelledby="alerts-title">
+          <div className="panel__heading">
+            <h2 className="panel__title" id="alerts-title">
+              Recent alerts
+            </h2>
+
+            <div className="panel__tools">
+              <label className="sr-only" htmlFor="alert-search">
+                Search the latest saved alerts
+              </label>
+
+              <input
+                id="alert-search"
+                className="table-search"
+                type="search"
+                value={alertSearch}
+                onChange={(event) => setAlertSearch(event.target.value)}
+                placeholder="Search alerts"
+                disabled={!data || recentAlerts.length === 0}
+              />
+
+              <span className="panel__count" aria-live="polite">
+                {data
+                  ? `${filteredAlerts.length} of ${recentAlerts.length}`
+                  : loading
+                    ? "Loading"
+                    : ""}
+              </span>
+            </div>
+          </div>
+
+          {loading && !data ? (
+            <div className="table-state" role="status">
+              Loading alert data...
+            </div>
+          ) : recentAlerts.length > 0 && filteredAlerts.length > 0 ? (
+            <div
+              className="table-wrap"
+              role="region"
+              aria-label="Recent alert records, horizontally scrollable table"
+              tabIndex={0}
+            >
+              <table className="data-table alerts-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Time</th>
+                    <th scope="col">Alert</th>
+                    <th scope="col">User / agent</th>
+                    <th scope="col">Rule</th>
+                    <th scope="col">Source</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredAlerts.map((alert) => (
+                    <tr key={alert.id}>
+                      <td className="table-time">
+                        {formatDate(alert.alert_timestamp)}
+                      </td>
+
+                      <td className="event-cell">
+                        <span className="event-cell__title">
+                          {alert.rule_description}
+                        </span>
+                        <span className="event-cell__meta">
+                          {alert.event_type || "Unclassified event"}
+                        </span>
+                      </td>
+
+                      <td className="identity-cell">
+                        <span>{alert.username || "Unknown user"}</span>
+                        <span className="identity-cell__meta">
+                          {alert.agent_name || "Agent unavailable"}
+                        </span>
+                      </td>
+
+                      <td className="identity-cell">
+                        <span>{alert.rule_id}</span>
+                        <span className="identity-cell__meta">
+                          Level {alert.rule_level}
+                        </span>
+                      </td>
+
+                      <td>{alert.source}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : recentAlerts.length > 0 ? (
+            <div className="table-state" role="status">
+              <h3>No matching alerts</h3>
+              <p>
+                Try another search term or{" "}
+                <button
+                  className="text-action"
+                  type="button"
+                  onClick={() => setAlertSearch("")}
+                >
+                  clear the search
+                </button>
+                .
+              </p>
+            </div>
+          ) : error && !data ? (
+            <div className="table-state">
+              Alert records are unavailable until the connection is restored.
+            </div>
+          ) : (
+            <div className="table-state">
+              <h3>No saved alerts yet</h3>
+              <p>Load the sample alerts to see how they appear here.</p>
+            </div>
+          )}
+        </section>
       </div>
     </main>
-  );
-}
-
-function StatCard({
-  title,
-  value,
-  description,
-  loading,
-}: {
-  title: string;
-  value: number | undefined;
-  description: string;
-  loading: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <p className="text-sm font-medium text-slate-500">
-        {title}
-      </p>
-
-      <p className="mt-3 text-3xl font-bold tracking-tight text-slate-900">
-        {loading && value === undefined ? "—" : value ?? 0}
-      </p>
-
-      <p className="mt-2 text-xs text-slate-500">
-        {description}
-      </p>
-    </div>
   );
 }

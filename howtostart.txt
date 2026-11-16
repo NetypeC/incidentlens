@@ -1,0 +1,53 @@
+To start your IncidentLens app on Windows, follow these steps.
+
+### Step 1 — Open VS Code
+
+Open your `incidentlens` project in VS Code.
+
+### Step 2 — Open the terminal
+
+Press:
+
+`Ctrl + ` (the key below Esc)
+
+Or select Terminal → New Terminal from the menu.
+
+### Step 3 — Enter your project folder
+
+Run:
+
+```
+Set-Location "$HOME\Projects\incidentlens"
+```
+
+### Step 4 — Start the development server
+
+Run:
+
+```
+npm run dev
+```
+
+Wait until you see something like:
+
+```
+▲ Next.js
+- Local: http://localhost:3000
+✓ Ready
+```
+
+### Step 5 — Open IncidentLens
+
+Open your browser and visit:
+
+
+
+Local app
+
+[http://localhost:3000](http://localhost:3000?utm_source=chatgpt.com)
+
+
+
+That's it! Your IncidentLens dashboard should appear.
+
+Important: Keep the terminal running while you use the app. To stop the server, press `Ctrl + C` in the terminal.

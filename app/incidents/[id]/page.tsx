@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
 type Incident = {
   id: string;
@@ -14,22 +15,18 @@ type Incident = {
   correlation_rule_id: string;
   first_seen_at: string | null;
   last_seen_at: string | null;
-  created_at: string;
 };
 
 type IncidentAlert = {
   id: string;
   source: string;
-  source_alert_id: string;
   alert_timestamp: string;
   agent_name: string | null;
-  rule_id: string;
   rule_level: number;
   rule_description: string | null;
   event_type: string | null;
   source_ip: string | null;
   username: string | null;
-  match_rule_id: string | null;
   match_reason: string | null;
 };
 
@@ -68,9 +65,7 @@ type AnalysisResponse = {
 
 function formatDate(value: string | null): string {
   if (!value) return "Not available";
-
   const date = new Date(value);
-
   if (Number.isNaN(date.getTime())) return value;
 
   return new Intl.DateTimeFormat("en-GB", {
@@ -79,42 +74,21 @@ function formatDate(value: string | null): string {
   }).format(date);
 }
 
-function Badge({ value }: { value: string }) {
-  const styles: Record<string, string> = {
-    low: "bg-slate-100 text-slate-700",
-    medium: "bg-amber-100 text-amber-800",
-    high: "bg-orange-100 text-orange-800",
-    critical: "bg-red-100 text-red-800",
-    open: "bg-rose-100 text-rose-800",
-    investigating: "bg-blue-100 text-blue-800",
-    resolved: "bg-emerald-100 text-emerald-800",
-    sample: "bg-amber-100 text-amber-800",
-    wazuh: "bg-blue-100 text-blue-800",
-  };
-
-  const style =
-    styles[value.toLowerCase()] ?? "bg-slate-100 text-slate-700";
-
+function Dot({ level }: { level: string }) {
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${style}`}
-    >
-      {value}
-    </span>
+      className="inc-dot"
+      data-level={level.toLowerCase()}
+      aria-hidden="true"
+    />
   );
 }
 
-function EvidenceList({ items }: { items: string[] }) {
-  if (items.length === 0) {
-    return (
-      <p className="text-sm text-slate-500">
-        No items were returned.
-      </p>
-    );
-  }
+function PlainList({ items }: { items: string[] }) {
+  if (!items.length) return <p className="inc-muted">Nothing returned.</p>;
 
   return (
-    <ul className="list-disc space-y-2 pl-5 text-sm leading-6 text-slate-700">
+    <ul className="inc-list">
       {items.map((item, index) => (
         <li key={`${index}-${item}`}>{item}</li>
       ))}
@@ -122,54 +96,53 @@ function EvidenceList({ items }: { items: string[] }) {
   );
 }
 
-function IncidentInvestigationContent() {
-  const params = useParams<{ id: string }>();
-  const id = params.id;
+function IncidentInvestigation() {
+  const { id } = useParams<{ id: string }>();
 
-  const [detail, setDetail] =
-    useState<IncidentDetailResponse | null>(null);
+  const [detail, setDetail] = useState<IncidentDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
   const [analyzing, setAnalyzing] = useState(false);
-  const [analysisError, setAnalysisError] =
-    useState<string | null>(null);
-  const [analysisResult, setAnalysisResult] =
-    useState<AnalysisResponse | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResponse | null>(
+    null
+  );
 
   useEffect(() => {
     let active = true;
 
-    fetch(`/api/incidents/${encodeURIComponent(id)}`, {
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        const result =
-          (await response.json()) as IncidentDetailResponse;
+    // Reset so a previous incident never flashes while the next one loads.
+    setLoading(true);
+    setError(null);
+    setDetail(null);
+    setAnalysisResult(null);
+    setAnalysisError(null);
+
+    async function loadIncident() {
+      try {
+        const response = await fetch(
+          `/api/incidents/${encodeURIComponent(id)}`,
+          { cache: "no-store" }
+        );
+        const result = (await response.json()) as IncidentDetailResponse;
 
         if (!response.ok || !result.success) {
-          throw new Error(
-            result.error || "Could not load this incident."
-          );
+          throw new Error(result.error || "Could not load this incident.");
         }
 
-        return result;
-      })
-      .then((result) => {
         if (active) setDetail(result);
-      })
-      .catch((err: unknown) => {
+      } catch (err) {
         if (active) {
           setError(
-            err instanceof Error
-              ? err.message
-              : "Could not load this incident."
+            err instanceof Error ? err.message : "Could not load this incident."
           );
         }
-      })
-      .finally(() => {
+      } finally {
         if (active) setLoading(false);
-      });
+      }
+    }
+
+    loadIncident();
 
     return () => {
       active = false;
@@ -184,23 +157,13 @@ function IncidentInvestigationContent() {
     try {
       const response = await fetch("/api/alerts/analyze", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ incidentId: id }),
       });
+      const result = (await response.json()) as AnalysisResponse;
 
-      const result =
-        (await response.json()) as AnalysisResponse;
-
-      if (
-        !response.ok ||
-        !result.success ||
-        !result.analysis
-      ) {
-        throw new Error(
-          result.error || "AI analysis could not be completed."
-        );
+      if (!response.ok || !result.success || !result.analysis) {
+        throw new Error(result.error || "AI analysis could not be completed.");
       }
 
       setAnalysisResult(result);
@@ -217,345 +180,245 @@ function IncidentInvestigationContent() {
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-slate-50 p-8 text-slate-600">
-        Loading incident and evidence...
+      <main className="incident-page">
+        <div className="page-shell page-state" role="status">
+          Loading incident...
+        </div>
       </main>
     );
   }
 
   if (error || !detail) {
     return (
-      <main className="min-h-screen bg-slate-50 p-8">
-        <Link
-          href="/"
-          className="text-sm font-medium text-blue-700 hover:underline"
-        >
-          ← Back to dashboard
-        </Link>
-
-        <div
-          role="alert"
-          className="mt-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"
-        >
-          {error || "Incident not found."}
+      <main className="incident-page">
+        <div className="page-shell page-state">
+          <Link href="/">Back to dashboard</Link>
+          <p role="alert">{error || "Incident not found."}</p>
         </div>
       </main>
     );
   }
 
-  const incident = detail.incident;
+  const { incident, alerts, alertCount } = detail;
+  const analysis = analysisResult?.analysis;
+  const facts = analysis?.facts ?? [];
+  const uncertainties = analysis?.uncertainties ?? [];
+  const recommendations = analysis?.recommendations ?? [];
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-5 sm:px-8">
-          <div>
-            <p className="text-xl font-bold">IncidentLens</p>
-            <p className="text-sm text-slate-500">
-              Incident investigation
-            </p>
-          </div>
-
-          <Badge value="Development · Sample data" />
+    <main className="incident-page">
+      <header className="masthead">
+        <div className="page-shell masthead__inner">
+          <Link className="brand" href="/">
+            <span className="brand__name">IncidentLens</span>
+          </Link>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-5 py-8 sm:px-8">
-        <Link
-          href="/"
-          className="text-sm font-medium text-blue-700 hover:underline"
-        >
-          ← Back to dashboard
+      <div className="page-shell inc">
+        <Link className="back-link" href="/">
+          Back to dashboard
         </Link>
 
-        <section className="mb-8 mt-5 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-start">
-            <div className="min-w-0">
-              <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                Incident investigation
-              </p>
-
-              <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">
-                {incident.title}
-              </h1>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Badge value={incident.severity} />
-                <Badge value={incident.status} />
-              </div>
-
-              <p className="mt-4 break-all font-mono text-xs text-slate-500">
-                Incident ID: {incident.id}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={runAnalysis}
-              disabled={analyzing || detail.alerts.length === 0}
-              className="shrink-0 rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {analyzing
-                ? "Analysing evidence..."
-                : "Analyse with AI"}
-            </button>
+        <header className="inc-header">
+          <div>
+            <h1>{incident.title}</h1>
+            <p className="inc-status">
+              <span className="inc-chip">
+                <Dot level={incident.severity} />
+                {incident.severity} severity
+              </span>
+              <span className="inc-chip">{incident.status}</span>
+            </p>
           </div>
 
-          <div className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <p className="text-xs text-slate-500">
-                Linked alerts
-              </p>
-              <p className="mt-1 text-2xl font-bold">
-                {detail.alertCount}
-              </p>
-            </div>
+          <Button
+            type="button"
+            onClick={runAnalysis}
+            disabled={analyzing || alerts.length === 0}
+            className="button"
+          >
+            {analyzing
+              ? "Analyzing..."
+              : analysis
+                ? "Regenerate analysis"
+                : "Generate analysis"}
+          </Button>
+        </header>
 
-            <div>
-              <p className="text-xs text-slate-500">
-                Correlation rule
-              </p>
-              <p className="mt-1 break-words font-mono text-sm">
-                {incident.correlation_rule_id}
-              </p>
-            </div>
+        {incident.summary && <p className="inc-lede">{incident.summary}</p>}
 
-            <div>
-              <p className="text-xs text-slate-500">
-                First seen
-              </p>
-              <p className="mt-1 text-sm">
-                {formatDate(incident.first_seen_at)}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-xs text-slate-500">
-                Last seen
-              </p>
-              <p className="mt-1 text-sm">
-                {formatDate(incident.last_seen_at)}
-              </p>
-            </div>
+        <dl className="inc-facts">
+          <div>
+            <dt>Linked alerts</dt>
+            <dd>{alertCount}</dd>
           </div>
+          <div>
+            <dt>Grouping confidence</dt>
+            <dd className="inc-cap">{incident.confidence}</dd>
+          </div>
+          <div>
+            <dt>First seen</dt>
+            <dd>{formatDate(incident.first_seen_at)}</dd>
+          </div>
+          <div>
+            <dt>Last seen</dt>
+            <dd>{formatDate(incident.last_seen_at)}</dd>
+          </div>
+        </dl>
 
-          {incident.summary && (
-            <div className="mt-6 rounded-lg bg-slate-50 p-4">
-              <h2 className="text-sm font-semibold">
-                Why this incident matched
-              </h2>
-              <p className="mt-2 text-sm leading-6 text-slate-700">
-                {incident.summary}
-              </p>
+        <details className="inc-details">
+          <summary>Technical details</summary>
+          <dl className="inc-tech">
+            <div>
+              <dt>Correlation rule</dt>
+              <dd>{incident.correlation_rule_id}</dd>
             </div>
-          )}
-
-          <p className="mt-4 text-xs leading-5 text-amber-800">
-            This is a development investigation using synthetic
-            sample alerts, not live Wazuh monitoring. AI findings
-            are advisory and do not prove that an account was
-            compromised.
-          </p>
-        </section>
+            <div>
+              <dt>Incident ID</dt>
+              <dd>{incident.id}</dd>
+            </div>
+          </dl>
+        </details>
 
         {analysisError && (
-          <div
-            role="alert"
-            className="mb-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"
-          >
+          <div className="message message--error" role="alert">
             {analysisError}
           </div>
         )}
 
-        {analysisResult?.analysis && (
-          <section className="mb-8 rounded-xl border border-blue-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
-              <div>
-                <h2 className="text-xl font-bold">
-                  AI investigation report
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Provider: {analysisResult.providerUsed || "Unknown"}
-                  {analysisResult.fallbackUsed
-                    ? " · Fallback provider used"
-                    : ""}
-                </p>
-              </div>
-
-              <Badge
-                value={`${analysisResult.analysis.confidence} confidence`}
-              />
+        {analysis && (
+          <section className="inc-section" aria-labelledby="analysis-title">
+            <div className="inc-section__head">
+              <h2 id="analysis-title">Analysis</h2>
+              <p className="inc-muted">
+                <span className="inc-cap">{analysis.confidence}</span> analysis
+                confidence, from {analysisResult?.providerUsed || "unknown"}
+                {analysisResult?.fallbackUsed ? " (fallback)" : ""}
+              </p>
             </div>
 
-            {analysisResult.notice && (
-              <p className="mt-4 text-xs leading-5 text-amber-800">
-                {analysisResult.notice}
-              </p>
+            <p className="inc-note">
+              AI findings are advisory and do not prove an account was
+              compromised.
+            </p>
+
+            {analysisResult?.notice && (
+              <p className="inc-note">{analysisResult.notice}</p>
             )}
 
-            <div className="mt-5 space-y-6">
-              <div>
-                <h3 className="font-semibold">Summary</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-700">
-                  {analysisResult.analysis.summary}
-                </p>
-              </div>
-
-              <div>
-                <h3 className="font-semibold">Observed facts</h3>
-                <div className="mt-2">
-                  <EvidenceList
-                    items={analysisResult.analysis.facts}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <h3 className="font-semibold">Interpretation</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-700">
-                  {analysisResult.analysis.interpretation}
-                </p>
-              </div>
-
-              <div>
-                <h3 className="font-semibold">
-                  Recommended investigation steps
-                </h3>
-
-                <div className="mt-3 space-y-3">
-                  {analysisResult.analysis.recommendations.map(
-                    (recommendation, index) => (
-                      <div
-                        key={`${index}-${recommendation.action}`}
-                        className="rounded-lg border border-slate-200 p-4"
-                      >
-                        <Badge value={recommendation.priority} />
-                        <h4 className="mt-2 font-medium">
-                          {recommendation.action}
-                        </h4>
-                        <p className="mt-1 text-sm leading-6 text-slate-600">
-                          {recommendation.reason}
-                        </p>
-                      </div>
-                    )
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <h3 className="font-semibold">Uncertainties</h3>
-                <div className="mt-2">
-                  <EvidenceList
-                    items={analysisResult.analysis.uncertainties}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <h3 className="font-semibold">Conclusion</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-700">
-                  {analysisResult.analysis.conclusion}
-                </p>
-              </div>
+            <div className="inc-block">
+              <h3>Summary</h3>
+              <p>{analysis.summary}</p>
             </div>
+
+            <div className="inc-block">
+              <h3>Conclusion</h3>
+              <p>{analysis.conclusion}</p>
+            </div>
+
+            <div className="inc-block">
+              <h3>Next steps</h3>
+              <ol className="inc-steps">
+                {recommendations.map((item, index) => (
+                  <li key={`${index}-${item.action}`}>
+                    <p className="inc-steps__action">
+                      <Dot level={item.priority} />
+                      {item.action}
+                    </p>
+                    <p className="inc-muted">{item.reason}</p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <details className="inc-details">
+              <summary>Full reasoning</summary>
+
+              <div className="inc-block">
+                <h3>What was observed</h3>
+                <PlainList items={facts} />
+              </div>
+
+              <div className="inc-block">
+                <h3>Interpretation</h3>
+                <p>{analysis.interpretation}</p>
+              </div>
+
+              <div className="inc-block">
+                <h3>What is still uncertain</h3>
+                <PlainList items={uncertainties} />
+              </div>
+            </details>
           </section>
         )}
 
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-5 py-4 sm:px-6">
-            <h2 className="font-semibold">Linked security evidence</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Actual alert records associated with this saved incident.
-            </p>
+        <section className="inc-section" aria-labelledby="alerts-title">
+          <div className="inc-section__head">
+            <h2 id="alerts-title">Alerts</h2>
+            <p className="inc-muted">{alertCount} linked</p>
           </div>
 
-          {detail.alerts.length === 0 ? (
-            <p className="p-6 text-sm text-slate-500">
-              No alert records are linked to this incident yet.
+          {alerts.length === 0 ? (
+            <p className="inc-muted">
+              No alert records are linked to this incident.
             </p>
           ) : (
-            <div className="divide-y divide-slate-100">
-              {detail.alerts.map((alert) => (
-                <article key={alert.id} className="p-5 sm:px-6">
-                  <div className="flex flex-col justify-between gap-3 sm:flex-row">
-                    <div className="min-w-0">
-                      <p className="font-medium">
-                        {alert.rule_description || "Security alert"}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {alert.event_type || "Unclassified event"}
-                      </p>
-                    </div>
+            <ol className="inc-alerts">
+              {alerts.map((alert) => (
+                <li className="inc-alert" key={alert.id}>
+                  <time
+                    className="inc-alert__time"
+                    dateTime={alert.alert_timestamp}
+                  >
+                    {formatDate(alert.alert_timestamp)}
+                  </time>
 
-                    <div className="flex shrink-0 flex-wrap items-center gap-2">
-                      <Badge value={alert.source} />
-                      <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">
-                        Rule level {alert.rule_level}
-                      </span>
-                    </div>
+                  <div>
+                    <h3>{alert.rule_description || "Security alert"}</h3>
+                    <p className="inc-muted">
+                      {alert.event_type || "Unclassified event"}, {alert.source},
+                      rule level {alert.rule_level}
+                    </p>
+                    <p className="inc-muted">
+                      {alert.username || "Unknown user"} on{" "}
+                      {alert.agent_name || "unknown agent"}, from{" "}
+                      {alert.source_ip || "unknown IP"}
+                    </p>
+
+                    {alert.match_reason && (
+                      <details className="inc-details inc-details--small">
+                        <summary>Why it matched</summary>
+                        <p className="inc-reason">{alert.match_reason}</p>
+                      </details>
+                    )}
                   </div>
-
-                  <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                    <div>
-                      <dt className="text-xs text-slate-500">Time</dt>
-                      <dd className="mt-1">
-                        {formatDate(alert.alert_timestamp)}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt className="text-xs text-slate-500">Username</dt>
-                      <dd className="mt-1">{alert.username || "Unavailable"}</dd>
-                    </div>
-
-                    <div>
-                      <dt className="text-xs text-slate-500">Source IP</dt>
-                      <dd className="mt-1">
-                        {alert.source_ip || "Unavailable"}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt className="text-xs text-slate-500">Agent</dt>
-                      <dd className="mt-1">
-                        {alert.agent_name || "Unavailable"}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  {alert.match_reason && (
-                    <div className="mt-4 rounded-lg bg-slate-50 p-3">
-                      <p className="text-xs font-semibold text-slate-600">
-                        Match reason
-                      </p>
-                      <p className="mt-1 text-sm leading-5 text-slate-600">
-                        {alert.match_reason}
-                      </p>
-                    </div>
-                  )}
-                </article>
+                </li>
               ))}
-            </div>
+            </ol>
           )}
         </section>
 
-        <footer className="py-8 text-center text-xs text-slate-500">
-          IncidentLens · Local development prototype
+        <footer className="dashboard__footer">
+          IncidentLens / Local development
         </footer>
       </div>
     </main>
   );
-}export default function IncidentInvestigationPage() {
+}
+
+export default function IncidentInvestigationPage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-screen bg-slate-50 p-8 text-slate-600">
-          Loading incident investigation...
+        <main className="incident-page">
+          <div className="page-shell page-state" role="status">
+            Loading incident...
+          </div>
         </main>
       }
     >
-      <IncidentInvestigationContent />
+      <IncidentInvestigation />
     </Suspense>
   );
 }
-
